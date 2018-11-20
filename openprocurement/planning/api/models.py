@@ -1,22 +1,33 @@
 # -*- coding: utf-8 -*-
+from itertools import chain
 from uuid import uuid4
-#from couchdb_schematics.document import SchematicsDocument
-from schematics.exceptions import ValidationError
-from openprocurement.api.utils import get_now
+
 from openprocurement.api.models import OpenprocurementSchematicsDocument as SchematicsDocument
-from openprocurement.api.models import Model, Period, Revision
+from openprocurement.api.constants import (
+    CPV_ITEMS_CLASS_FROM,
+    ADDITIONAL_CLASSIFICATIONS_SCHEMES,
+    ADDITIONAL_CLASSIFICATIONS_SCHEMES_2017,
+    BUDGET_PERIOD_FROM
+)
 from openprocurement.api.models import Document as BaseDocument
+from openprocurement.api.models import Model, Period, Revision
 from openprocurement.api.models import Unit, CPVClassification, Classification, Identifier
 from openprocurement.api.models import schematics_embedded_role, schematics_default_role, IsoDateTimeType, ListType
+from openprocurement.api.utils import get_now
 from openprocurement.api.validation import validate_cpv_group, validate_items_uniq
-from openprocurement.api.constants import CPV_ITEMS_CLASS_FROM, ADDITIONAL_CLASSIFICATIONS_SCHEMES, ADDITIONAL_CLASSIFICATIONS_SCHEMES_2017
+from openprocurement.api.constants import CPV_ITEMS_CLASS_FROM, ADDITIONAL_CLASSIFICATIONS_SCHEMES, \
+    ADDITIONAL_CLASSIFICATIONS_SCHEMES_2017, NOT_REQUIRED_ADDITIONAL_CLASSIFICATION_FROM
+from openprocurement.planning.api.constants import (
+    PROCEDURES,
+    MULTI_YEAR_BUDGET_PROCEDURES,
+    MULTI_YEAR_BUDGET_MAX_YEARS)
 from pyramid.security import Allow
+from schematics.exceptions import ValidationError
 from schematics.transforms import whitelist, blacklist
 from schematics.types import StringType, IntType, FloatType, BaseType
 from schematics.types.compound import ModelType, DictType
 from schematics.types.serializable import serializable
 from zope.interface import implementer, Interface
-from itertools import chain
 
 
 class IPlan(Interface):
@@ -31,6 +42,22 @@ class Project(Model):
     name_ru = StringType()
 
 
+class BudgetPeriod(Period):
+    startDate = IsoDateTimeType(required=True)
+    endDate = IsoDateTimeType(required=True)
+
+    def validate_endDate(self, data, value):
+        plan = data['__parent__']['__parent__']
+        start_date = data.get('startDate')
+        method_type = plan.tender.procurementMethodType
+        if method_type not in MULTI_YEAR_BUDGET_PROCEDURES and value.year != start_date.year:
+            raise ValidationError(u"Period startDate and endDate must be within one year for {}.".format(
+                method_type))
+        if method_type in MULTI_YEAR_BUDGET_PROCEDURES and value.year - start_date.year > MULTI_YEAR_BUDGET_MAX_YEARS:
+            raise ValidationError(u"Period startDate and endDate must be within {} budget years for {}.".format(
+                MULTI_YEAR_BUDGET_MAX_YEARS + 1, method_type))
+
+
 class Budget(Model):
     """A budget model """
     id = StringType(required=True)
@@ -42,9 +69,19 @@ class Budget(Model):
                           min_length=3)  # The currency in 3-letter ISO 4217 format.
     amountNet = FloatType()
     project = ModelType(Project)
+    period = ModelType(BudgetPeriod)
     year = IntType(min_value=2000)
     notes = StringType()
 
+    def validate_period(self, data, value):
+        if value:
+            if get_now() < BUDGET_PERIOD_FROM:
+                raise ValidationError(u"Can't use period field, use year field instead")
+            data['year'] = None
+
+    def validate_year(self, data, value):
+        if value and get_now() >= BUDGET_PERIOD_FROM:
+            raise ValidationError(u"Can't use year field, use period field instead")
 
 class PlanItem(Model):
     """Simple item model for planing"""
@@ -74,14 +111,17 @@ class PlanItem(Model):
         plan = data['__parent__']
         if not plan.classification:
             return
-        plan_from_2017 = (plan.get('revisions')[0].date if plan.get('revisions') else get_now()) > CPV_ITEMS_CLASS_FROM
+        plan_date = plan.get('revisions')[0].date if plan.get('revisions') else get_now()
+        plan_from_2017 = plan_date > CPV_ITEMS_CLASS_FROM
         not_cpv = data['classification']['id'] == '99999999-9'
-        if not items and (not plan_from_2017 or plan_from_2017 and not_cpv):
+        if not items and (not plan_from_2017
+                          or plan_from_2017 and not_cpv and plan_date < NOT_REQUIRED_ADDITIONAL_CLASSIFICATION_FROM):
             raise ValidationError(u'This field is required.')
         elif plan_from_2017 and not_cpv and items and not any([i.scheme in ADDITIONAL_CLASSIFICATIONS_SCHEMES_2017 for i in items]):
             raise ValidationError(u"One of additional classifications should be one of [{0}].".format(', '.join(ADDITIONAL_CLASSIFICATIONS_SCHEMES_2017)))
         elif not plan_from_2017 and items and not any([i.scheme in ADDITIONAL_CLASSIFICATIONS_SCHEMES for i in items]):
             raise ValidationError(u"One of additional classifications should be one of [{0}].".format(', '.join(ADDITIONAL_CLASSIFICATIONS_SCHEMES)))
+
 
 class PlanOrganization(Model):
     """An organization"""
@@ -89,13 +129,6 @@ class PlanOrganization(Model):
     name_en = StringType()
     name_ru = StringType()
     identifier = ModelType(Identifier, required=True)
-
-
-PROCEDURES = {
-    '': ('',),
-    'open': ('belowThreshold', 'aboveThresholdUA', 'aboveThresholdEU', 'aboveThresholdUA.defense', 'competitiveDialogueUA', 'competitiveDialogueEU', 'esco'),
-    'limited': ('reporting', 'negotiation', 'negotiation.quick'),
-}
 
 
 class PlanTender(Model):
