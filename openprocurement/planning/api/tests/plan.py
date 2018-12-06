@@ -24,6 +24,7 @@ from openprocurement.planning.api.tests.plan_blanks import (
     create_plan,
     get_plan,
     patch_plan,
+    patch_plan_item_quantity,
     plan_not_found,
     esco_plan,
     cfaua_plan,
@@ -64,6 +65,7 @@ class PlanResourceTest(BaseWebTest):
     test_create_plan = snitch(create_plan)
     test_get_plan = snitch(get_plan)
     test_patch_plan = snitch(patch_plan)
+    test_patch_plan_item_quantity = snitch(patch_plan_item_quantity)
     test_plan_not_found = snitch(plan_not_found)
     test_esco_plan = snitch(esco_plan)
     test_cfaua_plan = snitch(cfaua_plan)
