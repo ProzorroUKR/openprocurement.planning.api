@@ -27,7 +27,7 @@ entry_points = {
 setup(name='openprocurement.planning.api',
       version=version,
       description="",
-      long_description=open("README.rst").read() + "\n" +
+      long_description=open("README.md").read() + "\n" +
                        open(os.path.join("docs", "HISTORY.txt")).read(),
       classifiers=[
         "Programming Language :: Python",
